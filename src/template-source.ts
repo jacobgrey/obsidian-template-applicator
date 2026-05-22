@@ -18,11 +18,16 @@ const LOG = "[template-applicator]";
  *       Settings.ts. Documented within Templater's source.
  *
  *   Core Templates (internal, id "templates"):
- *     app.internalPlugins.getEnabledPluginById("templates").instance.options.folder
- *     - `instance.options.folder` is not in the public Obsidian API but is
- *       the de-facto-stable shape used across the plugin ecosystem (cf.
- *       obsidian-typings). Wrapped in optional chaining so a missing path
- *       degrades gracefully instead of throwing.
+ *     app.internalPlugins.getPluginById("templates").instance.options.folder
+ *     - `getPluginById` returns the *wrapper* (has .instance, .enabled);
+ *       `getEnabledPluginById` returns the *instance directly* (no
+ *       .instance) and yields null when the plugin is disabled. The
+ *       wrapper variant is the idiomatic choice used by Templater and
+ *       Periodic Notes: it works whether or not the plugin is enabled,
+ *       and the call shape matches the empirically-stable
+ *       `internalPlugins.plugins[id]` dict access.
+ *     - `.instance.options.folder` is not in the public Obsidian API but
+ *       is the de-facto-stable shape per obsidian-typings.
  *
  * When neither resolves, dump diagnostics so an unfamiliar install can
  * report what its actual shape looks like instead of failing silently.
@@ -50,8 +55,8 @@ function tryTemplater(app: App): string | null {
 
 function tryCore(app: App): string | null {
   const plugin = (app as unknown as {
-    internalPlugins: { getEnabledPluginById: (id: string) => unknown };
-  }).internalPlugins.getEnabledPluginById("templates") as
+    internalPlugins: { getPluginById: (id: string) => unknown };
+  }).internalPlugins.getPluginById("templates") as
     | { instance?: { options?: { folder?: string } } }
     | null;
   const folder = plugin?.instance?.options?.folder;
