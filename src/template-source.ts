@@ -8,13 +8,24 @@ export type TemplateSource =
 const LOG = "[template-applicator]";
 
 /**
- * Discover the user's templates folder by reading plugin settings.
+ * Discover the user's templates folder.
  *
- * Both the community Templater plugin and the core Templates plugin store
- * their template-folder paths in undocumented locations whose shape has
- * changed across versions. Probe several known shapes/field names and log
- * a diagnostic dump when none match, so users can paste back what their
- * install actually looks like.
+ * Canonical access paths (verified against current upstream sources):
+ *
+ *   Templater (community, id "templater-obsidian"):
+ *     app.plugins.getPlugin("templater-obsidian").settings.templates_folder
+ *     - `templates_folder` is the declared field name in Templater's own
+ *       Settings.ts. Documented within Templater's source.
+ *
+ *   Core Templates (internal, id "templates"):
+ *     app.internalPlugins.getEnabledPluginById("templates").instance.options.folder
+ *     - `instance.options.folder` is not in the public Obsidian API but is
+ *       the de-facto-stable shape used across the plugin ecosystem (cf.
+ *       obsidian-typings). Wrapped in optional chaining so a missing path
+ *       degrades gracefully instead of throwing.
+ *
+ * When neither resolves, dump diagnostics so an unfamiliar install can
+ * report what its actual shape looks like instead of failing silently.
  */
 export function getTemplateSource(app: App): TemplateSource {
   const fromTemplater = tryTemplater(app);
@@ -28,79 +39,27 @@ export function getTemplateSource(app: App): TemplateSource {
 }
 
 function tryTemplater(app: App): string | null {
-  const plugin = getCommunityPlugin(app, "templater-obsidian");
-  if (!plugin) return null;
-  // Templater has used several names for the folder field across versions.
-  const settings = (plugin as { settings?: Record<string, unknown> }).settings;
-  return readStringField(settings, [
-    "templates_folder",
-    "template_folder",
-    "templates_folder_path",
-    "folder",
-  ]);
+  const plugin = (app as unknown as {
+    plugins: { getPlugin: (id: string) => unknown };
+  }).plugins.getPlugin("templater-obsidian") as
+    | { settings?: { templates_folder?: string } }
+    | null;
+  const folder = plugin?.settings?.templates_folder;
+  return typeof folder === "string" && folder.length > 0 ? folder : null;
 }
 
 function tryCore(app: App): string | null {
-  const plugin = getInternalPlugin(app, "templates");
-  if (!plugin) return null;
-  const opts =
-    (plugin as { instance?: { options?: Record<string, unknown> } }).instance?.options ??
-    (plugin as { options?: Record<string, unknown> }).options;
-  return readStringField(opts, ["folder", "template_folder", "templatesFolder"]);
-}
-
-function getCommunityPlugin(app: App, id: string): unknown {
-  const mgr = (app as unknown as {
-    plugins?: {
-      getPlugin?: (id: string) => unknown;
-      plugins?: Record<string, unknown>;
-    };
-  }).plugins;
-  if (!mgr) return null;
-  try {
-    const viaFn = mgr.getPlugin?.(id);
-    if (viaFn) return viaFn;
-  } catch {
-    /* fall through */
-  }
-  return mgr.plugins?.[id] ?? null;
-}
-
-function getInternalPlugin(app: App, id: string): unknown {
-  const mgr = (app as unknown as {
-    internalPlugins?: {
-      getEnabledPluginById?: (id: string) => unknown;
-      getPluginById?: (id: string) => unknown;
-      plugins?: Record<string, unknown>;
-    };
-  }).internalPlugins;
-  if (!mgr) return null;
-  try {
-    const viaEnabled = mgr.getEnabledPluginById?.(id);
-    if (viaEnabled) return viaEnabled;
-  } catch {
-    /* fall through */
-  }
-  try {
-    const viaGet = mgr.getPluginById?.(id);
-    if (viaGet) return viaGet;
-  } catch {
-    /* fall through */
-  }
-  return mgr.plugins?.[id] ?? null;
-}
-
-function readStringField(obj: Record<string, unknown> | undefined, names: string[]): string | null {
-  if (!obj) return null;
-  for (const n of names) {
-    const v = obj[n];
-    if (typeof v === "string" && v.length > 0) return v;
-  }
-  return null;
+  const plugin = (app as unknown as {
+    internalPlugins: { getEnabledPluginById: (id: string) => unknown };
+  }).internalPlugins.getEnabledPluginById("templates") as
+    | { instance?: { options?: { folder?: string } } }
+    | null;
+  const folder = plugin?.instance?.options?.folder;
+  return typeof folder === "string" && folder.length > 0 ? folder : null;
 }
 
 function dumpDiagnostics(app: App): void {
-  console.warn(`${LOG} templates folder not detected. Diagnostics follow.`);
+  console.warn(`${LOG} templates folder not detected via canonical paths. Diagnostics:`);
   try {
     const community = (app as unknown as {
       plugins?: { plugins?: Record<string, unknown> };
@@ -109,11 +68,8 @@ function dumpDiagnostics(app: App): void {
     const templater = community?.["templater-obsidian"] as
       | { settings?: unknown }
       | undefined;
-    if (templater) {
-      console.warn(`${LOG}   templater settings keys:`, templater.settings ? Object.keys(templater.settings as Record<string, unknown>) : "(no settings)");
+    if (templater?.settings) {
       console.warn(`${LOG}   templater settings (raw):`, templater.settings);
-    } else {
-      console.warn(`${LOG}   Templater (id "templater-obsidian") not present`);
     }
   } catch (err) {
     console.warn(`${LOG}   community plugins probe failed:`, err);
@@ -129,8 +85,6 @@ function dumpDiagnostics(app: App): void {
     if (core) {
       console.warn(`${LOG}   core Templates enabled:`, core.enabled);
       console.warn(`${LOG}   core Templates options (raw):`, core.instance?.options);
-    } else {
-      console.warn(`${LOG}   core Templates plugin not present`);
     }
   } catch (err) {
     console.warn(`${LOG}   internal plugins probe failed:`, err);
