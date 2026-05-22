@@ -1,9 +1,11 @@
 import { App, normalizePath, TFile, moment } from "obsidian";
+import { getTemplateSource } from "./template-source";
 
 // Obsidian's exported `moment` is the moment.js callable, but its TS type
 // is the namespace. Cast once at the import boundary.
 const momentFn = moment as unknown as () => { format: (f: string) => string };
-import { getTemplateSource } from "./template-source";
+
+const LOG = "[template-applicator]";
 
 /**
  * Apply a template that matches the parent folder's name to a newly
@@ -11,41 +13,58 @@ import { getTemplateSource } from "./template-source";
  * that `<% tp.* %>` syntax works; otherwise performs the limited
  * `{{title}}` / `{{date}}` / `{{time}}` substitution done by the core
  * Templates plugin.
- *
- * The brief wait before applying lets Obsidian finish opening the file in
- * the editor, which Templater needs to target the active file correctly.
  */
 export async function applyFolderTemplateIfMatch(
   app: App,
   file: TFile,
 ): Promise<void> {
   const parent = file.parent;
-  if (!parent || parent.isRoot()) return;
+  if (!parent || parent.isRoot()) {
+    console.info(LOG, "skip: file is in vault root or has no parent", file.path);
+    return;
+  }
 
   const source = getTemplateSource(app);
-  if (source.kind === "none") return;
+  if (source.kind === "none") {
+    console.info(LOG, "skip: no templates folder configured (check Templater or core Templates settings)");
+    return;
+  }
+  console.info(LOG, `template source: ${source.kind} -> "${source.folder}"`);
 
   const templatesFolder = normalizePath(source.folder);
-  if (isInside(file.path, templatesFolder)) return;
+  if (isInside(file.path, templatesFolder)) {
+    console.info(LOG, "skip: new file is inside the templates folder");
+    return;
+  }
 
   const candidate = normalizePath(`${templatesFolder}/${parent.name}.md`);
   const templateFile = app.vault.getAbstractFileByPath(candidate);
-  if (!(templateFile instanceof TFile)) return;
+  if (!(templateFile instanceof TFile)) {
+    console.info(
+      LOG,
+      `skip: no matching template at "${candidate}" (folder "${parent.name}" needs a same-named file there)`,
+    );
+    return;
+  }
+  console.info(LOG, `match: "${candidate}" -> "${file.path}"`);
 
-  // Safety net: refuse to overwrite a file that already has content (e.g.,
-  // a file synced in from outside that happened to slip past the active-file
-  // heuristic in the caller).
   const existing = await app.vault.read(file);
-  if (existing.length > 0) return;
-
-  await sleep(50);
+  if (existing.length > 0) {
+    console.info(LOG, "skip: target file already has content, refusing to overwrite");
+    return;
+  }
 
   if (source.kind === "templater") {
     const ok = await tryTemplater(app, templateFile, file);
-    if (ok) return;
+    if (ok) {
+      console.info(LOG, "applied via Templater");
+      return;
+    }
+    console.info(LOG, "Templater path did not apply; falling back to core substitution");
   }
 
   await applyCore(app, templateFile, file);
+  console.info(LOG, "applied via core substitution");
 }
 
 async function tryTemplater(
@@ -53,24 +72,39 @@ async function tryTemplater(
   templateFile: TFile,
   targetFile: TFile,
 ): Promise<boolean> {
-  try {
-    const plugin = (app as unknown as {
-      plugins?: { getPlugin?: (id: string) => unknown };
-    }).plugins?.getPlugin?.("templater-obsidian") as
-      | {
-          templater?: {
-            write_template_to_file?: (t: TFile, f: TFile) => Promise<void>;
-          };
-        }
-      | undefined;
-    const fn = plugin?.templater?.write_template_to_file;
-    if (!fn) return false;
-    await fn.call(plugin.templater, templateFile, targetFile);
-    return true;
-  } catch (err) {
-    console.warn("[template-applicator] Templater apply failed, falling back", err);
+  const plugin = (app as unknown as {
+    plugins?: { getPlugin?: (id: string) => unknown };
+  }).plugins?.getPlugin?.("templater-obsidian") as
+    | {
+        templater?: Record<string, unknown>;
+      }
+    | undefined;
+  const t = plugin?.templater;
+  if (!t) {
+    console.warn(LOG, "Templater plugin object not reachable at plugins.templater-obsidian.templater");
     return false;
   }
+
+  // Templater's external API has changed names across versions. Try the
+  // known method names in order and use the first that's callable.
+  const candidates = [
+    "write_template_to_file",
+    "append_template_to_active_file",
+    "overwrite_file_commands",
+  ] as const;
+  for (const name of candidates) {
+    const fn = t[name];
+    if (typeof fn === "function") {
+      try {
+        await (fn as (...a: unknown[]) => Promise<void>).call(t, templateFile, targetFile);
+        return true;
+      } catch (err) {
+        console.warn(LOG, `Templater.${name} threw, trying next`, err);
+      }
+    }
+  }
+  console.warn(LOG, "no usable Templater apply method found; templater object keys:", Object.keys(t));
+  return false;
 }
 
 async function applyCore(
@@ -111,8 +145,4 @@ function readCoreFormats(app: App): { date: string; time: string } {
 function isInside(filePath: string, folderPath: string): boolean {
   const f = normalizePath(folderPath);
   return filePath === f || filePath.startsWith(f + "/");
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
 }

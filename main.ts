@@ -40,11 +40,15 @@ export default class TemplateApplicatorPlugin extends Plugin {
         if (!(file instanceof TFile)) return;
         if (file.extension !== "md") return;
         if (!this.settings.applyFolderTemplates) return;
-        // Defer: vault.on('create') fires before Obsidian opens the new
-        // note as the active file, so the user-creation heuristic needs
-        // to run after the workspace has settled.
+        // Recency check distinguishes a real new-note creation from the
+        // initial vault scan that fires create events on every existing
+        // file at startup. Empty-content guard inside the applier
+        // handles synced/imported files.
+        if (Date.now() - file.stat.ctime > 5000) return;
+        // Defer so Obsidian finishes opening the new file before the
+        // applier writes to it — keeps the editor view in sync.
         window.setTimeout(() => {
-          if (!this.isLikelyUserCreation(file)) return;
+          console.info("[template-applicator] create event ->", file.path);
           void applyFolderTemplateIfMatch(this.app, file);
         }, 100);
       }),
@@ -113,9 +117,4 @@ export default class TemplateApplicatorPlugin extends Plugin {
     await this.app.workspace.getLeaf(false).openFile(file);
   }
 
-  private isLikelyUserCreation(file: TFile): boolean {
-    const recent = Date.now() - file.stat.ctime < 1500;
-    const isActive = this.app.workspace.getActiveFile()?.path === file.path;
-    return recent && isActive;
-  }
 }

@@ -1,6 +1,6 @@
 {
   "name": "template-applicator",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Obsidian plugin: create new notes in the selected folder and auto-apply a folder-name template.",
   "main": "main.js",
   "scripts": {
